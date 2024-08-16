@@ -18,7 +18,8 @@ cursor.execute('''
     CREATE TABLE Votes (
         ID INTEGER PRIMARY KEY AUTOINCREMENT,
         Vote TEXT,
-        Signature TEXT UNIQUE
+        Signature TEXT UNIQUE,
+        TransactionHash TEXT
     )
 ''')
 
