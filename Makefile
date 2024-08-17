@@ -13,4 +13,4 @@ setup:
 	python3 src/data-setup.py
 
 run:
-	uvicorn src.voting-service-api:app --reload --port 8001
+	uvicorn src.voting-service-api:app --reload --port 8001 --host 0.0.0.0

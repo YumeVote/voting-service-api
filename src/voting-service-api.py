@@ -16,17 +16,29 @@ import hashlib
 load_dotenv()
 
 class Vote(BaseModel):
+    """
+    candidate id: the id of the candidate that the citizen is voting for
+    voteDigitalSignature: the digital signature of the vote
+    identitySignature: the digital signature of the citizen's identity
+    """
+    candidate_id: int
     vote: str
-    signature: str
+    voteDigitalSignature: str
+    identitySignature: str
+    storedIdentitySignature: str
 
 GOVERNMENT_SERVICE_API_HOST=os.getenv("GOVERNMENT_SERVICE_API_HOST")
 GOVERNMENT_SERVICE_API_PORT=os.getenv("GOVERNMENT_SERVICE_API_PORT")
-GOVERNMENT_SERVICE_PUBLIC_KEY_API="http://{}:{}/keys".format(GOVERNMENT_SERVICE_API_HOST, GOVERNMENT_SERVICE_API_PORT)
+GOVERNMENT_SERVICE_API = "http://{}:{}".format(GOVERNMENT_SERVICE_API_HOST, GOVERNMENT_SERVICE_API_PORT)
+GOVERNMENT_SERVICE_PUBLIC_KEY_API="{}/keys".format(GOVERNMENT_SERVICE_API)
+GOVERNMENT_SERVICE_CITIZEN_VERIFICATION_API="{}/verify".format(GOVERNMENT_SERVICE_API)
 
 MASCHAIN_CLIENT_ID = os.getenv("MASCHAIN_CLIENT_ID")
 MASCHAIN_CLIENT_SECRET = os.getenv("MASCHAIN_CLIENT_SECRET")
 ORGANIZATION_WALLET_ADDRESS = os.getenv("ORGANIZATION_WALLET_ADDRESS")
 VOTING_AUDIT_SMART_CONTRACT_ADDRESS = os.getenv("VOTING_AUDIT_SMART_CONTRACT_ADDRESS")
+VOTING_TOKEN_SMART_CONTRACT_ADDRESS = os.getenv("VOTING_TOKEN_SMART_CONTRACT_ADDRESS")
+STORED_IDENTITY_ORIGINAL_MESSAGE = os.getenv("STORED_IDENTITY_ORIGINAL_MESSAGE")
 
 headers = {
     "client_id": MASCHAIN_CLIENT_ID,
@@ -35,6 +47,14 @@ headers = {
 }
 
 app = FastAPI()
+
+def verify_citizen(digitalIdentitySignature: str):
+    verification_response = requests.post(GOVERNMENT_SERVICE_CITIZEN_VERIFICATION_API, params={"digitalIdentitySignature": digitalIdentitySignature})
+    print(verification_response.text)
+    if verification_response.status_code != 200:
+        print("Verification failed")
+        return False
+    return True
 
 def verify_signature(public_key_pem, signature, message):
     # Load the public key
@@ -56,9 +76,62 @@ def verify_signature(public_key_pem, signature, message):
         print(f"Verification failed: {e}")
         return False
 
+def get_candidate_wallet_address(candidate_id):
+    conn = sqlite3.connect('assets/voting-system.sql')
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT WalletAddress FROM Candidates
+        WHERE ID = ?
+    ''', (candidate_id,))
+    wallet_address = cursor.fetchone()[0]
+    conn.close()
+    return wallet_address
+
+def get_candidate_name(candidate_id):
+    conn = sqlite3.connect('assets/voting-system.sql')
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT CandidateName FROM Candidates
+        WHERE ID = ?
+    ''', (candidate_id,))
+    candidate_name = cursor.fetchone()[0]
+    conn.close()
+    return candidate_name
+
+def add_vote_to_candidate_wallet(wallet_address):
+    response = requests.post(
+        "https://service-testnet.maschain.com/api/token/mint",
+        headers=headers,
+        params={
+            "wallet_address": ORGANIZATION_WALLET_ADDRESS,
+            "to": wallet_address,
+            "amount": 1,
+            "contract_address": VOTING_TOKEN_SMART_CONTRACT_ADDRESS,
+            "callback_url": "http://gmail.com"
+        }
+    )
+    print(response.json())
+    return response.json()["result"]["transactionHash"]
+
 @app.get("/")
 def read_root():
     return "Voting Service API is running properly"
+
+@app.get("/candidates")
+def candidates():
+    """
+    This endpoint is used to get the list of candidates that citizens can vote for
+    1. It fetches all the candidates from the database
+    2. It returns the candidates as a list of dictionaries
+    """
+    conn = sqlite3.connect('assets/candidates.sql')
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT ID, CandidateName FROM Candidates
+    ''')
+    candidates = cursor.fetchall()
+    conn.close()
+    return candidates
 
 @app.get("/history")
 async def history():
@@ -107,16 +180,28 @@ def results():
     conn = sqlite3.connect('assets/voting-system.sql')
     cursor = conn.cursor()
     cursor.execute('''
-        SELECT Vote, COUNT(Vote) FROM Votes
-        GROUP BY Vote
+        SELECT CandidateName, WalletAddress FROM Candidates
     ''')
-    votes = cursor.fetchall()
+    candidates = cursor.fetchall()
     conn.close()
+    voting_result = []
 
-    result = {}
-    for vote in votes:
-        result[vote[0]] = vote[1]
-    return result
+    for candidate in candidates:
+        balance = requests.post(
+            "https://service-testnet.maschain.com/api/token/balance", 
+            headers=headers, 
+            params={
+                "wallet_address": candidate[1], 
+                "contract_address": VOTING_TOKEN_SMART_CONTRACT_ADDRESS}
+            )
+
+        voting_result.append(
+            {
+                "CandidateName": candidate[0],
+                "Votes": balance.json()["result"]
+            }
+        )
+    return voting_result
 
 @app.post("/vote")
 async def vote(vote: Vote):
@@ -124,7 +209,7 @@ async def vote(vote: Vote):
     This endpoint is used to cast a vote
     1. It receives the vote and signature from the client
     2. It verifies the signature with all the public keys exposed by the government
-    3. If the signature is verified, the vote is added to the database and the hash of this vote entry is auditted on the blockchain
+    3. If the signature is verified, a NFT is minted and the vote is a
     4. If the signature is not verified, the vote is not added to the database and an error response is returned
     """
     response = requests.get(GOVERNMENT_SERVICE_PUBLIC_KEY_API)
@@ -132,44 +217,67 @@ async def vote(vote: Vote):
     conn = sqlite3.connect('assets/voting-system.sql')
     cursor = conn.cursor()
     try:
+
+        if not verify_citizen(vote.identitySignature):
+            # ask the government's service to verify the citizen
+            raise HTTPException(status_code=403, detail="Invalid Citizen")
+        
         for public_key in public_keys:
-            if verify_signature(public_key, vote.signature, vote.vote):
-                cursor.execute('''
-                    INSERT INTO Votes (Vote, Signature)
-                    VALUES (?, ?)
-                ''', (vote.vote, vote.signature))
-                conn.commit()
+            # check if the person who votes is a valid citizen or not
+            # the voting system itself check if the vote has been signed by the citizen or not
+            if not verify_signature(public_key, vote.storedIdentitySignature, STORED_IDENTITY_ORIGINAL_MESSAGE):
+                print(STORED_IDENTITY_ORIGINAL_MESSAGE)
+                continue
 
-                vote_id = cursor.lastrowid
-                hash_of_vote = hashlib.sha256((str(vote_id)+","+vote.vote+","+vote.signature).encode()).hexdigest()
+            if not verify_signature(public_key, vote.voteDigitalSignature, vote.vote):
+                raise HTTPException(status_code=403, detail="Invalid Vote")
 
-                # Make the API request with the JSON string
-                vote_audit_response = requests.post(
-                    headers=headers,
-                    url="https://service-testnet.maschain.com/api/audit/audit",
-                    params={
-                        "wallet_address": ORGANIZATION_WALLET_ADDRESS,
-                        "contract_address": VOTING_AUDIT_SMART_CONTRACT_ADDRESS,
-                        "metadata": hash_of_vote,
-                        "callback_url": "http://gmail.com"
-                    }
-                )
+            if not verify_signature(public_key, vote.voteDigitalSignature, get_candidate_name(vote.candidate_id)):
+                raise HTTPException(status_code=403, detail="Invalid Candidate")
 
-                vote_audit_json_object = vote_audit_response.json()
-                transactionHash = vote_audit_json_object["result"]["transactionHash"]
+            cursor.execute('''
+                INSERT INTO Votes (Vote, VoteDigitalSignature, IdentityDigitalSignature)
+                VALUES (?, ?, ?)
+            ''', (vote.vote, vote.voteDigitalSignature, vote.storedIdentitySignature))
+            conn.commit()
 
-                cursor.execute('''
-                    UPDATE Votes
-                    SET TransactionHash = ?
-                    WHERE ID = ?
-                ''', (transactionHash, vote_id))
-                print(vote_audit_json_object)
+            vote_id = cursor.lastrowid
+            hash_of_vote = hashlib.sha256((str(vote_id)+","+vote.vote+","+ vote.storedIdentitySignature + "," + vote.identitySignature).encode()).hexdigest()
+            vote_transaction_hash = add_vote_to_candidate_wallet(get_candidate_wallet_address(vote.candidate_id))
 
-                conn.commit()
+            metaData = {
+                "vote_transaction_hash": vote_transaction_hash,
+                "hash_of_vote": hash_of_vote
+            }
 
-                return str(vote_id)
+            # Make the API request with the JSON string
+            vote_audit_response = requests.post(
+                headers=headers,
+                url="https://service-testnet.maschain.com/api/audit/audit",
+                params={
+                    "wallet_address": ORGANIZATION_WALLET_ADDRESS,
+                    "contract_address": VOTING_AUDIT_SMART_CONTRACT_ADDRESS,
+                    "metadata": metaData,
+                    "callback_url": "http://gmail.com"
+                }
+            )
+
+            vote_audit_json_object = vote_audit_response.json()
+            auditTransactionHash = vote_audit_json_object["result"]["transactionHash"]
+
+            cursor.execute('''
+                UPDATE Votes
+                SET VoteTransactionHash = ?, AuditTransactionHash = ?
+                WHERE ID = ?
+            ''', (vote_transaction_hash, auditTransactionHash ,vote_id))
+            print(vote_audit_json_object)
+
+            conn.commit()
+
+            return str(vote_id)
         # if after looping every single public key, the signature is not verified
         # that means the citizen is invalid
+        print("Loop cannot find")
         raise HTTPException(status_code=403, detail="Invalid Citizen")
     except sqlite3.IntegrityError as e:
         conn.rollback()
