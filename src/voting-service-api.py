@@ -1,9 +1,10 @@
 from http.client import HTTPResponse
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from dotenv import load_dotenv
 from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.asymmetric import padding
+from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives import serialization
 import base64
 
@@ -65,11 +66,7 @@ def verify_signature(public_key_pem, signature, message):
         public_key.verify(
             base64.b64decode(signature),
             message.encode(),
-            padding.PSS(
-            mgf=padding.MGF1(hashes.SHA256()),
-            salt_length=padding.PSS.MAX_LENGTH
-            ),
-            hashes.SHA256()
+            ec.ECDSA(hashes.SHA256())
         )
         return True
     except Exception as e:
@@ -135,6 +132,16 @@ def candidates():
     candidates = cursor.fetchall()
     conn.close()
     return candidates
+
+@app.get("/candidate-image/{candidate_id}")
+def candidate_image(candidate_id: int):
+    """
+    This endpoint is used to get the image of a candidate
+    1. It fetches the image of the candidate from the database
+    2. It returns the image as a dictionary
+    """
+    image_path = f"images/{candidate_id}.jpg"
+    return FileResponse(image_path)
 
 @app.get("/history")
 async def history():
@@ -236,6 +243,7 @@ async def vote(vote: Vote):
             # ask the government's service to verify the citizen
             raise HTTPException(status_code=403, detail="Invalid Citizen")
         
+        print(public_keys)
         for public_key in public_keys:
             # check if the person who votes is a valid citizen or not
             # the voting system itself check if the vote has been signed by the citizen or not
