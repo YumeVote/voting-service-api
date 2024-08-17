@@ -59,7 +59,7 @@ def verify_citizen(digitalIdentitySignature: str):
 
 def verify_signature(public_key_pem, signature, message):
     # Load the public key
-    public_key = serialization.load_pem_public_key(public_key_pem.encode(), serialization.Encoding.PEM)
+    public_key = serialization.load_pem_public_key(base64.b64decode(public_key_pem), serialization.Encoding.PEM)
     try:
         print(public_key)
         # Verify the signature
