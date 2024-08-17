@@ -127,7 +127,7 @@ def candidates():
     1. It fetches all the candidates from the database
     2. It returns the candidates as a list of dictionaries
     """
-    conn = sqlite3.connect('assets/candidates.sql')
+    conn = sqlite3.connect('assets/voting-system.sql')
     cursor = conn.cursor()
     cursor.execute('''
         SELECT ID, CandidateName FROM Candidates
