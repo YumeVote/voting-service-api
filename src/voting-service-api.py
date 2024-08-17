@@ -113,6 +113,9 @@ def add_vote_to_candidate_wallet(wallet_address):
     print(response.json())
     return response.json()["result"]["transactionHash"]
 
+def generate_history_list():
+    pass
+
 @app.get("/")
 def read_root():
     return "Voting Service API is running properly"
@@ -148,26 +151,37 @@ async def history():
     votes = cursor.fetchall()
     conn.close()
 
+    """
     audit_trail_history_response = requests.get(
         headers=headers,
         url="https://service-testnet.maschain.com/api/audit/audit"
     )
+    """
 
-    audit_trail_history_response_json = audit_trail_history_response.json()
+   # audit_trail_history_response_json = audit_trail_history_response.json()
 
     audit_history = []
-    for i, vote in enumerate(votes):
-        for audit_trail in audit_trail_history_response_json["result"]:
-            print(vote[3], audit_trail["transactionHash"])
-            if vote[3] == audit_trail["transactionHash"]:
-                audit_history.append({
-                    "ID": vote[0],
-                    "Vote": vote[1],
-                    "Signature": vote[2],
-                    "TransactionHash": vote[3],
-                    "Hash": audit_trail["metadata"]
-                })
-                break
+    for vote in votes:
+        
+        print(vote[5])
+        auditTransactionResponse = requests.get(
+            headers=headers,
+            url="https://service-testnet.maschain.com/api/audit/audit/{}".format(vote[5])
+        )
+        auditTransactionResponseJson = auditTransactionResponse.json()
+        print(auditTransactionResponseJson)
+
+        audit_history.append(
+            {
+                "ID": vote[0],
+                "Vote": vote[1],
+                "VoteDigitalSignature": vote[2],
+                "IdentityDigitalSignature": vote[3],
+                "VoteTransactionHash": vote[4],
+                "AuditTransactionHash": vote[5],
+                "Metadata": auditTransactionResponseJson["result"]["metadata"]
+            }
+        )
     return audit_history
 
 @app.get("/results")
@@ -249,6 +263,7 @@ async def vote(vote: Vote):
                 "vote_transaction_hash": vote_transaction_hash,
                 "hash_of_vote": hash_of_vote
             }
+            metaData_str = str(metaData)
 
             # Make the API request with the JSON string
             vote_audit_response = requests.post(
@@ -257,20 +272,19 @@ async def vote(vote: Vote):
                 params={
                     "wallet_address": ORGANIZATION_WALLET_ADDRESS,
                     "contract_address": VOTING_AUDIT_SMART_CONTRACT_ADDRESS,
-                    "metadata": metaData,
+                    "metadata": metaData_str,
                     "callback_url": "http://gmail.com"
                 }
             )
 
             vote_audit_json_object = vote_audit_response.json()
-            auditTransactionHash = vote_audit_json_object["result"]["transactionHash"]
+            audit_transaction_hash = vote_audit_json_object["result"]["transactionHash"]
 
             cursor.execute('''
                 UPDATE Votes
                 SET VoteTransactionHash = ?, AuditTransactionHash = ?
                 WHERE ID = ?
-            ''', (vote_transaction_hash, auditTransactionHash ,vote_id))
-            print(vote_audit_json_object)
+            ''', (vote_transaction_hash, audit_transaction_hash ,vote_id))
 
             conn.commit()
 
