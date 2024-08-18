@@ -1,6 +1,7 @@
 from http.client import HTTPResponse
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
 from cryptography.hazmat.primitives import hashes
@@ -48,6 +49,14 @@ headers = {
 }
 
 app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"]
+)
 
 def verify_citizen(digitalIdentitySignature: str):
     verification_response = requests.post(GOVERNMENT_SERVICE_CITIZEN_VERIFICATION_API, params={"digitalIdentitySignature": digitalIdentitySignature})
